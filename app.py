@@ -9,6 +9,24 @@ app = Flask(__name__)
 # Create downloads directory
 DOWNLOAD_FOLDER = tempfile.gettempdir()
 
+
+# Temporary cookie file path
+cookiefile_path = os.path.join(tempfile.gettempdir(), "cookies.txt")
+
+# If Render environment variable YT_COOKIES exists, write it to a temp file
+if os.environ.get("YT_COOKIES"):
+    with open(cookiefile_path, "w", encoding="utf-8") as f:
+        f.write(os.environ["YT_COOKIES"])
+# Else if running locally and cookies.txt exists, use it
+elif os.path.exists("cookies.txt"):
+    cookiefile_path = os.path.abspath("cookies.txt")
+# Else, no cookies available
+else:
+    cookiefile_path = None
+
+print(f"✅ Using cookie file: {cookiefile_path if cookiefile_path else 'No cookies loaded'}")
+
+
 def get_video_info(url):
     """Get video information and available formats - OPTIMIZED"""
     ydl_opts = {
@@ -18,7 +36,7 @@ def get_video_info(url):
         'no_check_certificate': True,
         'extract_flat': False,
         'youtube_include_dash_manifest': True,
-        'cookiefile': 'cookies.txt',
+        'cookiefile': cookiefile_path,
     }
     
     try:
