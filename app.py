@@ -203,5 +203,6 @@ def cleanup_old_files():
             except:
                 pass
 
-if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))  # Render default port is 10000
+    app.run(host="0.0.0.0", port=port)
