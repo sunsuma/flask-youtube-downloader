@@ -9,12 +9,33 @@ app = Flask(__name__)
 # Create downloads directory
 DOWNLOAD_FOLDER = tempfile.gettempdir()
 
-cookiefile_path = os.path.join(tempfile.gettempdir(), "cookies.txt")
-if os.environ.get("YT_COOKIES"):
-    with open(cookiefile_path, "w") as f:
-        f.write(os.environ["YT_COOKIES"])
-else:
-    cookiefile_path = None  # fallback if not provided
+# Default: no cookie file
+cookiefile_path = None
+
+# 1) Prefer Render Secret File (mounted at /etc/secrets/cookies.txt if uploaded)
+secret_path = "/etc/secrets/cookies.txt"
+if os.path.exists(secret_path):
+    cookiefile_path = secret_path
+
+# 2) Next prefer an environment variable (YT_COOKIES) written to a temp file
+elif os.environ.get("YT_COOKIES"):
+    cookiefile_path = os.path.join(tempfile.gettempdir(), "cookies.txt")
+    try:
+        with open(cookiefile_path, "w", encoding="utf-8") as f:
+            f.write(os.environ["YT_COOKIES"])
+    except Exception as ex:
+        cookiefile_path = None
+        app.logger.error("Failed to write YT_COOKIES to temp file: %s", ex)
+
+# 3) Finally, fallback to cookies.txt bundled with repo (only for local use; avoid committing to git)
+elif os.path.exists("cookies.txt"):
+    cookiefile_path = os.path.abspath("cookies.txt")
+
+# Log which cookie source is being used (check logs on Render)
+# if cookiefile_path:
+#     app.logger.info("Using cookie file: %s", cookiefile_path)
+# else:
+#     app.logger.info("No cookies loaded (videos requiring login will fail)")
 
 def get_video_info(url):
     """Get video information and available formats - OPTIMIZED"""
