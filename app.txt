@@ -9,6 +9,13 @@ app = Flask(__name__)
 # Create downloads directory
 DOWNLOAD_FOLDER = tempfile.gettempdir()
 
+cookiefile_path = os.path.join(tempfile.gettempdir(), "cookies.txt")
+if os.environ.get("YT_COOKIES"):
+    with open(cookiefile_path, "w") as f:
+        f.write(os.environ["YT_COOKIES"])
+else:
+    cookiefile_path = None  # fallback if not provided
+
 def get_video_info(url):
     """Get video information and available formats - OPTIMIZED"""
     ydl_opts = {
@@ -18,20 +25,8 @@ def get_video_info(url):
         'no_check_certificate': True,
         'extract_flat': False,
         'youtube_include_dash_manifest': True,
-        # Add headers to avoid bot detection
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-us,en;q=0.5',
-            'Sec-Fetch-Mode': 'navigate',
-        },
-        # Additional options to bypass restrictions
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'web'],
-                'skip': ['hls', 'dash']
-            }
-        },
+        'cookiefile': cookiefile_path,
+
     }
     
     try:
@@ -148,20 +143,6 @@ def download():
             'format': format_id,
             'outtmpl': temp_file + '.%(ext)s',
             'quiet': True,
-            # Add headers to avoid bot detection
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Sec-Fetch-Mode': 'navigate',
-            },
-            # Additional options to bypass restrictions
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android', 'web'],
-                    'skip': ['hls', 'dash']
-                }
-            },
             # Preserve original audio and subtitles
             'writesubtitles': True,
             'writeautomaticsub': False,
