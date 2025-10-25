@@ -18,6 +18,7 @@ def get_video_info(url):
         'no_check_certificate': True,
         'extract_flat': False,
         'youtube_include_dash_manifest': True,
+        'cookiefile': 'cookies.txt',
     }
     
     try:
