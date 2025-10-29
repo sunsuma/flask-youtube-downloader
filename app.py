@@ -1,8 +1,11 @@
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify, Response
 import yt_dlp
 import os
 import tempfile
-from pathlib import Path
+import time
+import re
+from urllib.parse import quote
+import unicodedata
 
 app = Flask(__name__)
 
@@ -10,28 +13,13 @@ app = Flask(__name__)
 DOWNLOAD_FOLDER = tempfile.gettempdir()
 
 def get_video_info(url):
-    """Get video information and available formats - OPTIMIZED"""
+    """Get video information and available formats"""
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
         'skip_download': True,
         'no_check_certificate': True,
         'extract_flat': False,
-        'youtube_include_dash_manifest': True,
-        # Add headers to avoid bot detection
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-us,en;q=0.5',
-            'Sec-Fetch-Mode': 'navigate',
-        },
-        # Additional options to bypass restrictions
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'web'],
-                'skip': ['hls', 'dash']
-            }
-        },
     }
     
     try:
@@ -40,75 +28,88 @@ def get_video_info(url):
             
             formats_dict = {}
             
-            # Process all formats in single pass
+            # Get audio format info
+            best_audio_size = 0
+            for f in info.get('formats', []):
+                if f.get('acodec') != 'none' and f.get('vcodec') == 'none':
+                    filesize = f.get('filesize') or f.get('filesize_approx', 0)
+                    if filesize > best_audio_size:
+                        best_audio_size = filesize
+            
+            # Process video formats
             for f in info.get('formats', []):
                 height = f.get('height')
-                if not height or height < 144:  # Skip very low quality
+                if not height or height < 144:
                     continue
                 
                 vcodec = f.get('vcodec', 'none')
                 acodec = f.get('acodec', 'none')
                 
-                # Skip audio-only or formats without proper codecs
+                # Skip audio-only formats
                 if vcodec == 'none' or vcodec is None:
                     continue
                 
-                # Get filesize - prioritize filesize over filesize_approx
-                filesize = f.get('filesize')
-                if not filesize:
-                    filesize = f.get('filesize_approx', 0)
+                # Get filesize
+                filesize = f.get('filesize') or f.get('filesize_approx', 0)
                 
-                # For formats with video but no audio, estimate audio size
-                format_note = f.get('format_note', '').lower()
-                has_audio = acodec != 'none' and acodec is not None
+                # If video-only, add estimated audio size
+                if acodec == 'none' and best_audio_size > 0:
+                    filesize += best_audio_size
                 
-                # If no audio, add estimated audio size (typically 128kbps * duration)
-                if not has_audio and filesize and info.get('duration'):
-                    # Estimate audio: ~128kbps = 16KB/s
-                    estimated_audio = int(info['duration'] * 16 * 1024)
-                    filesize += estimated_audio
+                format_note = f.get('format_note', f'{height}p')
+                fps = f.get('fps', 30)
                 
-                # Create format entry
-                if height not in formats_dict:
-                    formats_dict[height] = {
+                # Create unique key for resolution
+                key = f"{height}p"
+                
+                if key not in formats_dict or filesize > formats_dict[key]['filesize']:
+                    formats_dict[key] = {
                         'format_id': f['format_id'],
-                        'resolution': f'{height}p',
+                        'resolution': key,
                         'height': height,
                         'filesize': filesize,
-                        'filesize_mb': round(filesize / (1024 * 1024), 2) if filesize else 0,
+                        'filesize_mb': round(filesize / (1024 * 1024), 1) if filesize else 0,
                         'ext': f.get('ext', 'mp4'),
-                        'quality_label': format_note or f'{height}p',
+                        'fps': fps,
+                        'vcodec': vcodec,
+                        'quality_label': format_note,
                     }
-                else:
-                    # Keep the one with larger filesize (better quality)
-                    if filesize > formats_dict[height]['filesize']:
-                        formats_dict[height].update({
-                            'format_id': f['format_id'],
-                            'filesize': filesize,
-                            'filesize_mb': round(filesize / (1024 * 1024), 2) if filesize else 0,
-                            'ext': f.get('ext', 'mp4'),
-                        })
             
             # Convert to sorted list
             formats = list(formats_dict.values())
             formats.sort(key=lambda x: x['height'], reverse=True)
             
-            # If no formats found, try simpler approach
-            if not formats:
-                formats = [{
-                    'format_id': 'best',
-                    'resolution': 'Best',
+            # Add "Best" option at the top
+            if formats:
+                formats.insert(0, {
+                    'format_id': 'bestvideo+bestaudio/best',
+                    'resolution': 'Best Available',
                     'height': 9999,
-                    'filesize': 0,
-                    'filesize_mb': 0,
+                    'filesize': formats[0]['filesize'],
+                    'filesize_mb': formats[0]['filesize_mb'],
                     'ext': 'mp4',
-                    'quality_label': 'Best Available',
-                }]
+                    'fps': 60,
+                    'quality_label': 'Highest Quality',
+                })
+            
+            # Add audio-only option
+            formats.append({
+                'format_id': 'bestaudio',
+                'resolution': 'Audio Only',
+                'height': 0,
+                'filesize': best_audio_size,
+                'filesize_mb': round(best_audio_size / (1024 * 1024), 1) if best_audio_size else 0,
+                'ext': 'mp3',
+                'fps': 0,
+                'quality_label': 'MP3 Audio',
+            })
             
             return {
                 'title': info.get('title', 'Unknown Title'),
                 'thumbnail': info.get('thumbnail', ''),
                 'duration': info.get('duration', 0),
+                'uploader': info.get('uploader', 'Unknown'),
+                'view_count': info.get('view_count', 0),
                 'formats': formats
             }
     except Exception as e:
@@ -138,82 +139,95 @@ def download():
         return jsonify({'error': 'Missing parameters'}), 400
     
     try:
-        # Create unique temporary file based on timestamp
-        import time
-        import re
         timestamp = int(time.time() * 1000)
-        temp_file = os.path.join(DOWNLOAD_FOLDER, f'video_{timestamp}_{format_id}')
+        temp_file = os.path.join(DOWNLOAD_FOLDER, f'video_{timestamp}')
+        
+        # Check if audio-only
+        is_audio = format_id == 'bestaudio'
         
         ydl_opts = {
-            'format': format_id,
+            'format': format_id if not is_audio else 'bestaudio/best',
             'outtmpl': temp_file + '.%(ext)s',
             'quiet': True,
-            # Add headers to avoid bot detection
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Sec-Fetch-Mode': 'navigate',
-            },
-            # Additional options to bypass restrictions
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android', 'web'],
-                    'skip': ['hls', 'dash']
-                }
-            },
-            # Preserve original audio and subtitles
-            'writesubtitles': True,
-            'writeautomaticsub': False,
-            'subtitleslangs': ['all'],
-            'embedsubtitles': True,
-            # Keep all audio tracks and metadata
-            'keepvideo': False,
-            'postprocessors': [{
-                'key': 'FFmpegEmbedSubtitle',
-            }],
-            # Preserve original language
-            'prefer_ffmpeg': True,
-            'merge_output_format': 'mp4',
+            'no_warnings': True,
+            'merge_output_format': 'mp4' if not is_audio else None,
         }
+        
+        # Add audio extraction for MP3
+        if is_audio:
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             
-            # Clean the title for filename (remove invalid characters)
+            # Clean the title for filename
             clean_title = re.sub(r'[<>:"/\\|?*]', '', info['title'])
-            clean_title = clean_title[:200]  # Limit length
-            filename = f"{clean_title}.mp4"
+            clean_title = clean_title[:150]
             
-            # Find the actual downloaded file
-            actual_file = temp_file + '.mp4'
-            if not os.path.exists(actual_file):
-                # Check for other extensions
-                for ext in ['webm', 'mkv', 'mp4']:
-                    test_file = temp_file + f'.{ext}'
-                    if os.path.exists(test_file):
-                        actual_file = test_file
-                        break
+            # Find the downloaded file
+            actual_file = None
+            extensions = ['mp3', 'mp4', 'webm', 'mkv']
+            for ext in extensions:
+                test_file = temp_file + f'.{ext}'
+                if os.path.exists(test_file):
+                    actual_file = test_file
+                    filename = f"{clean_title}.{ext}"
+                    break
+            
+            if not actual_file:
+                return jsonify({'error': 'File not found after download'}), 500
         
-        # Clean up old temp files
+        # Clean up old files
         cleanup_old_files()
-            
-        return send_file(
-            actual_file,
-            as_attachment=True,
-            download_name=filename,
-            mimetype='video/mp4'
-        )
+        
+        # Stream file with progress
+        def generate():
+            with open(actual_file, 'rb') as f:
+                while True:
+                    chunk = f.read(8192)
+                    if not chunk:
+                        break
+                    yield chunk
+            # Delete file after streaming
+            try:
+                os.remove(actual_file)
+            except:
+                pass
+        
+        response = Response(generate(), mimetype='application/octet-stream')
+        # Create ASCII-safe fallback filename to avoid Latin-1 encoding errors
+        try:
+            safe_name = unicodedata.normalize('NFKD', filename).encode('ascii', 'ignore').decode('ascii')
+        except Exception:
+            safe_name = filename
+        if not safe_name:
+            safe_name = 'video'
+
+        # RFC5987 encoded filename* parameter for UTF-8 filenames
+        try:
+            encoded_name = quote(filename)
+            response.headers['Content-Disposition'] = f"attachment; filename=\"{safe_name}\"; filename*=UTF-8''{encoded_name}"
+        except Exception:
+            # Fallback to basic header
+            response.headers['Content-Disposition'] = f'attachment; filename="{safe_name}"'
+
+        response.headers['Content-Length'] = str(os.path.getsize(actual_file))
+        
+        return response
+        
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 def cleanup_old_files():
     """Clean up temporary video files older than 1 hour"""
-    import time
     current_time = time.time()
     
     for filename in os.listdir(DOWNLOAD_FOLDER):
-        if filename.startswith('video_') and filename.endswith('.mp4'):
+        if filename.startswith('video_'):
             filepath = os.path.join(DOWNLOAD_FOLDER, filename)
             try:
                 file_age = current_time - os.path.getmtime(filepath)
